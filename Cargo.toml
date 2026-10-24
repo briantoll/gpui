@@ -70,6 +70,8 @@ wayland = [
     "ashpd/wayland",
     "cosmic-text",
     "swash",
+    "sys-locale",
+    "unicode-script",
     "font-kit",
     "calloop-wayland-source",
     "wayland-backend",
@@ -90,6 +92,8 @@ x11 = [
     "ashpd",
     "cosmic-text",
     "swash",
+    "sys-locale",
+    "unicode-script",
     "font-kit",
     "as-raw-xcb-connection",
     "x11rb",
@@ -517,6 +521,16 @@ optional = true
 # Cassetta patch: variable-font instances in platform/linux/text_system.rs (CASSETTA_PATCH.md).
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.swash]
 version = "0.2.10"
+optional = true
+
+# Cassetta patch: the Linux font fallback in platform/linux/text_system.rs (CASSETTA_PATCH.md);
+# the versions cosmic-text 0.14.2 builds.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.sys-locale]
+version = "0.3"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.unicode-script]
+version = "0.5"
 optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wayland-backend]

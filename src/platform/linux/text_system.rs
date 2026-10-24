@@ -62,7 +62,7 @@ struct LoadedFont {
 impl CosmicTextSystem {
     pub(crate) fn new() -> Self {
         // todo(linux) make font loading non-blocking
-        let mut font_system = FontSystem::new();
+        let font_system = new_font_system();
 
         Self(RwLock::new(CosmicTextSystemState {
             font_system,
@@ -73,6 +73,156 @@ impl CosmicTextSystem {
             variable_instances: HashMap::default(),
             scale_context: swash::scale::ScaleContext::new(),
         }))
+    }
+}
+
+/// Cassetta patch: `FontSystem::new()` with [`LinuxFallback`] in place of cosmic-text's
+/// `PlatformFallback`. The database, its default families and the locale are built exactly as
+/// `FontSystem::new_with_fonts` builds them (cosmic-text 0.14.2 `font/system.rs`).
+fn new_font_system() -> FontSystem {
+    let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_system_fonts();
+    db.set_monospace_family("Noto Sans Mono");
+    db.set_sans_serif_family("Open Sans");
+    db.set_serif_family("DejaVu Serif");
+    let fallback = LinuxFallback::new(&db, &locale);
+    FontSystem::new_with_locale_and_db_and_fallback(locale, db, fallback)
+}
+
+/// Cassetta patch: the font fallback lists, with cosmic-text's last-resort stage turned off.
+///
+/// cosmic-text's `FontFallbackIter` tries, for a cluster the requested font cannot draw, the
+/// script's named families, then the common families, then **every face in the database**
+/// (except `forbidden_fallback` families), loading each one (`make_shared_face_data` maps the
+/// file) to shape the run with it. A cluster no single face can draw (a Latin base carrying a
+/// Telugu combining mark, say) never stops that walk: one title mapped all 649 font files of a
+/// desktop with Noto CJK installed (+102 MiB resident, a 52 ms shape). The walk cannot be cut
+/// short from gpui (the iterator lives inside `ShapeLine::new`), so this `Fallback`:
+///
+/// - names every family in the database as forbidden, so the last stage loads nothing (faces
+///   added later through `add_fonts` are not on the list and stay reachable);
+/// - keeps cosmic-text's script lists, and for a script it has no list for names the installed
+///   `Noto Sans <Script>` / `Noto Serif <Script>` family, resolved once from the database's
+///   family names (no file is opened);
+/// - extends the common list with the families the last stage used to find for common
+///   characters: `Noto Sans Symbols 2` (cosmic-text spells it `Symbols2`, which matches
+///   nothing), `Noto Sans Math`, `Noto Music`, and the locale's Noto Sans CJK family (fullwidth
+///   forms and CJK punctuation in an otherwise Latin string).
+struct LinuxFallback {
+    common: Vec<&'static str>,
+    forbidden: &'static [&'static str],
+    by_script: HashMap<unicode_script::Script, Vec<&'static str>>,
+}
+
+impl LinuxFallback {
+    fn new(db: &cosmic_text::fontdb::Database, locale: &str) -> Self {
+        use cosmic_text::{Fallback, PlatformFallback};
+        use unicode_script::Script;
+        // Each face's first family name, the families with the most faces first (the last
+        // stage checks a face against this list in order, so most faces match early).
+        let mut counts: HashMap<&str, usize> = HashMap::default();
+        for face in db.faces() {
+            if let Some((name, _)) = face.families.first() {
+                *counts.entry(name.as_str()).or_default() += 1;
+            }
+        }
+        let mut names = counts.into_iter().collect::<Vec<_>>();
+        names.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let leak = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
+        let forbidden: &'static [&'static str] = Box::leak(
+            names
+                .iter()
+                .map(|(name, _)| leak(name))
+                .collect::<Vec<_>>()
+                .into(),
+        );
+
+        let mut by_script: HashMap<Script, Vec<&'static str>> = HashMap::default();
+        for &family in forbidden {
+            for prefix in ["Noto Sans ", "Noto Serif "] {
+                let Some(rest) = family.strip_prefix(prefix) else {
+                    continue;
+                };
+                if let Some(script) = noto_script(rest) {
+                    let list = by_script.entry(script).or_default();
+                    // Sans before Serif whatever the order found.
+                    if prefix == "Noto Sans " {
+                        list.insert(0, family);
+                    } else {
+                        list.push(family);
+                    }
+                }
+            }
+        }
+        by_script.retain(|script, _| PlatformFallback.script_fallback(*script, locale).is_empty());
+
+        let han = PlatformFallback.script_fallback(Script::Han, locale);
+        let mut common = PlatformFallback.common_fallback().to_vec();
+        common.extend(["Noto Sans Symbols 2", "Noto Sans Math", "Noto Music"]);
+        common.extend_from_slice(han);
+        Self {
+            common,
+            forbidden,
+            by_script,
+        }
+    }
+}
+
+/// Cassetta patch: the script a Noto family is named for, from the name after "Noto Sans " /
+/// "Noto Serif ": the Unicode full name with spaces (`Tai Le`), run together (`PhagsPa`,
+/// `NKo`), or one of Noto's four abbreviations. Weights and variants (`Arabic UI`, `Thai
+/// Looped`, `Telugu Black`) match nothing, so each script gets its plain family.
+fn noto_script(name: &str) -> Option<unicode_script::Script> {
+    use unicode_script::Script;
+    let full = match name {
+        "EgyptHiero" => "Egyptian_Hieroglyphs",
+        "ImpAramaic" => "Imperial_Aramaic",
+        "InsPahlavi" => "Inscriptional_Pahlavi",
+        "PsaPahlavi" => "Psalter_Pahlavi",
+        _ => "",
+    };
+    if !full.is_empty() {
+        return Script::from_full_name(full);
+    }
+    let underscored = name.replace(' ', "_");
+    if let Some(script) = Script::from_full_name(&underscored) {
+        return Some(script);
+    }
+    // `PhagsPa` → `Phags_Pa`.
+    let mut split = String::with_capacity(name.len() + 2);
+    let mut previous_lower = false;
+    for c in name.chars() {
+        if c.is_uppercase() && previous_lower {
+            split.push('_');
+        }
+        previous_lower = c.is_lowercase();
+        split.push(c);
+    }
+    if let Some(script) = Script::from_full_name(&split) {
+        return Some(script);
+    }
+    // `NKo` → `Nko`.
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    Script::from_full_name(&format!("{first}{}", chars.as_str().to_lowercase()))
+}
+
+impl cosmic_text::Fallback for LinuxFallback {
+    fn common_fallback(&self) -> &[&'static str] {
+        &self.common
+    }
+
+    fn forbidden_fallback(&self) -> &[&'static str] {
+        self.forbidden
+    }
+
+    fn script_fallback(&self, script: unicode_script::Script, locale: &str) -> &[&'static str] {
+        let named = cosmic_text::PlatformFallback.script_fallback(script, locale);
+        if !named.is_empty() {
+            return named;
+        }
+        self.by_script.get(&script).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -679,4 +829,28 @@ fn face_info_into_properties(
 fn check_is_known_emoji_font(postscript_name: &str) -> bool {
     // TODO: Include other common emoji fonts
     postscript_name == "NotoColorEmoji"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::noto_script;
+    use unicode_script::Script;
+
+    /// Cassetta patch: the Noto family names map to their scripts; weights and variants do not.
+    #[test]
+    fn noto_family_names_map_to_scripts() {
+        assert_eq!(noto_script("Telugu"), Some(Script::Telugu));
+        assert_eq!(noto_script("Tai Le"), Some(Script::Tai_Le));
+        assert_eq!(noto_script("Ol Chiki"), Some(Script::Ol_Chiki));
+        assert_eq!(noto_script("PhagsPa"), Some(Script::Phags_Pa));
+        assert_eq!(noto_script("NKo"), Some(Script::Nko));
+        assert_eq!(noto_script("EgyptHiero"), Some(Script::Egyptian_Hieroglyphs));
+        assert_eq!(noto_script("Telugu Black"), None);
+        assert_eq!(noto_script("Arabic UI"), None);
+        assert_eq!(noto_script("Thai Looped"), None);
+        assert_eq!(noto_script("CJK SC"), None);
+        assert_eq!(noto_script("Symbols 2"), None);
+        assert_eq!(noto_script("Mono"), None);
+        assert_eq!(noto_script(""), None);
+    }
 }
