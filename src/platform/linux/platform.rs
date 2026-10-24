@@ -37,6 +37,7 @@ pub(crate) const SCROLL_LINES: f32 = 3.0;
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(crate) const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 pub(crate) const DOUBLE_CLICK_DISTANCE: Pixels = px(5.0);
+#[cfg(feature = "credentials")]
 pub(crate) const KEYRING_LABEL: &str = "zed-github-account";
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -499,6 +500,7 @@ impl<P: LinuxClient + 'static> Platform for P {
         self.with_common(|common| common.auto_hide_scrollbars)
     }
 
+    #[cfg(feature = "credentials")]
     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
         let url = url.to_string();
         let username = username.to_string();
@@ -518,6 +520,7 @@ impl<P: LinuxClient + 'static> Platform for P {
         })
     }
 
+    #[cfg(feature = "credentials")]
     fn read_credentials(&self, url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
         let url = url.to_string();
         self.background_executor().spawn(async move {
@@ -546,6 +549,7 @@ impl<P: LinuxClient + 'static> Platform for P {
         })
     }
 
+    #[cfg(feature = "credentials")]
     fn delete_credentials(&self, url: &str) -> Task<Result<()>> {
         let url = url.to_string();
         self.background_executor().spawn(async move {
@@ -563,6 +567,22 @@ impl<P: LinuxClient + 'static> Platform for P {
 
             Ok(())
         })
+    }
+
+    // Cassetta patch: without the `credentials` feature (no `oo7`) the keyring calls fail.
+    #[cfg(not(feature = "credentials"))]
+    fn write_credentials(&self, _: &str, _: &str, _: &[u8]) -> Task<Result<()>> {
+        Task::ready(Err(anyhow!("gpui built without the credentials feature")))
+    }
+
+    #[cfg(not(feature = "credentials"))]
+    fn read_credentials(&self, _: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
+        Task::ready(Err(anyhow!("gpui built without the credentials feature")))
+    }
+
+    #[cfg(not(feature = "credentials"))]
+    fn delete_credentials(&self, _: &str) -> Task<Result<()>> {
+        Task::ready(Err(anyhow!("gpui built without the credentials feature")))
     }
 
     fn window_appearance(&self) -> WindowAppearance {

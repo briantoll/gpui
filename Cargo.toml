@@ -84,6 +84,10 @@ wayland = [
     "open",
 ]
 windows-manifest = []
+# Cassetta patch: the Linux/FreeBSD credentials API (`oo7`, the Secret Service keyring, and the
+# second `ashpd` it brings). Off by default here; upstream parity is this feature on. Without
+# it `read_credentials`, `write_credentials` and `delete_credentials` return an error there.
+credentials = ["dep:oo7"]
 x11 = [
     "blade-graphics",
     "blade-macros",
@@ -284,8 +288,20 @@ package = "gpui-macros"
 version = "0.2.2"
 package = "gpui_http_client"
 
+# Cassetta patch: only the codecs gpui decodes (CASSETTA_PATCH.md, patch 3): `img()`'s
+# `guess_format` path with its GIF and WebP animation decoders (`elements/img.rs`), and
+# `Image::to_image_data`'s PNG, JPEG, WebP, GIF and BMP (`platform.rs`). Upstream's default
+# features also build AVIF, DDS, EXR, farbfeld, HDR, ICO, PNM, QOI, TGA and TIFF, and rayon.
 [dependencies.image]
 version = "0.25.1"
+default-features = false
+features = [
+    "bmp",
+    "gif",
+    "jpeg",
+    "png",
+    "webp",
+]
 
 [dependencies.inventory]
 version = "0.3.19"
@@ -506,8 +522,10 @@ features = ["source-fontconfig-dlopen"]
 optional = true
 package = "zed-font-kit"
 
+# Cassetta patch: the keyring behind the `credentials` feature (CASSETTA_PATCH.md, patch 3).
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.oo7]
 version = "0.5.0"
+optional = true
 features = [
     "async-std",
     "native_crypto",

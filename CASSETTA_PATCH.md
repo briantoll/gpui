@@ -2,7 +2,7 @@
 
 This repository is [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui)
 0.2.2 exactly as published on crates.io (first commit, `Cargo.toml` as
-published, registry bookkeeping files dropped), plus two patches for
+published, registry bookkeeping files dropped), plus three patches for
 [Cassetta](https://github.com/briantoll/cassetta), one commit each, which
 pins it by rev:
 
@@ -16,6 +16,7 @@ the patches are offered under the same terms. The version stays `0.2.2`.
 
 1. **Variable-font weights on Linux** (2026-10-13) — below.
 2. **The font fallback's last stage off on Linux** (2026-10-24) — below.
+3. **The dependency trim: `image` codecs, `oo7` behind `credentials`** (2026-10-24) — below.
 
 # Patch 1: variable-font weights on Linux
 
@@ -108,6 +109,42 @@ nor a `Noto Sans <Script>` family), draws as `.notdef` instead of being found
 by the walk. On the desktop measured, no character in the library is such a
 case.
 
+# Patch 3: the dependency trim
+
+## Why
+
+Two of gpui 0.2.2's dependencies carry far more than gpui uses, and Cargo
+features cannot turn them off from the consumer's side. `image` comes with its
+default features: every format it knows (AVIF, DDS, EXR, farbfeld, HDR, ICO,
+PNM, QOI, TGA, TIFF beside the five gpui opens) and rayon. `oo7` (the Secret
+Service keyring behind `read_credentials` / `write_credentials` /
+`delete_credentials`) is an unconditional Linux dependency and brings a second
+`ashpd` (0.12, next to gpui's own 0.11) and a crypto stack; an app that never
+stores credentials still links it.
+
+## The hunks (`Cargo.toml`, `src/platform/linux/platform.rs`)
+
+| Where | What |
+|---|---|
+| `Cargo.toml` `[dependencies.image]` | `default-features = false`, `features = ["bmp", "gif", "jpeg", "png", "webp"]`: what gpui decodes. `img()` (`elements/img.rs`) sniffs bytes with `guess_format` and decodes GIF and WebP with their own animation decoders (`GifDecoder`, `WebPDecoder`), any other format through `load_from_memory_with_format`; `Image::to_image_data` (`platform.rs`, clipboard and `Image` sources) decodes PNG, JPEG, WebP, GIF and BMP (and SVG through resvg, not `image`). The Linux cursor paths (`wayland-cursor`, xcursor) do not use `image`. |
+| `Cargo.toml` `[features]` | `credentials = ["dep:oo7"]`, **off by default**. Upstream parity is this feature on. |
+| `Cargo.toml` `oo7` | `optional = true`. |
+| `platform/linux/platform.rs` | `KEYRING_LABEL` and the three `oo7` methods behind `#[cfg(feature = "credentials")]`; without it `read_credentials`, `write_credentials` and `delete_credentials` return `Err("gpui built without the credentials feature")`. |
+
+What it gives up without `credentials`: the keyring. With these codecs, an
+`img()` or clipboard image in TIFF, ICO, AVIF, QOI, TGA, PNM, HDR, EXR, DDS or
+farbfeld fails to decode (the error path every unknown format already takes);
+`Img::extensions()` still lists them (upstream's list, unchanged).
+
+## Measured (Cassetta's shell, release with fat LTO, stripped, aarch64, 2026-10-24)
+
+| | before (patch 1) | patches 2 and 3 (patch 2 adds no crate: cosmic-text already links `sys-locale` and `unicode-script`) |
+|---|---|---|
+| `cassetta-shell` file size | 25,653,360 B | 22,905,728 B (−2.75 MB, −10.7 %) |
+| `.text` (cargo bloat) | 18.9 MiB | 16.5 MiB |
+| zvariant / zbus / image / exr / image-webp / oo7 / tiff / ashpd | 1.2 MiB / 743 / 499 / 290 / 247 / 253 / 143 / 233 KiB | 429 / 635 / 268 / – / 247 / – / – / 183 KiB |
+| `cargo tree -d` | two `ashpd` (0.11, 0.12), two `rand` | one `ashpd`, one `rand` |
+
 # On the next gpui bump
 
 Start a fresh branch `cassetta-<version>` from the verbatim published crate and
@@ -123,5 +160,11 @@ in Zed main now holds the Linux text system), one commit per patch kept:
    `new_font_system()` still builds the same database. Re-measure: the
    Songs scroll's mapped font files (`/proc/<pid>/maps`) on a desktop with
    Noto CJK installed.
+3. The trim: compare the new manifest's `image` features and its
+   `read_credentials` / `write_credentials` / `delete_credentials` with this
+   patch's. If upstream already depends on `image` without default features
+   and makes `oo7` optional, drop the patch; else re-apply it, re-reading
+   `elements/img.rs` and `Image::to_image_data` for the codecs gpui opens
+   (a new decoder there needs its feature).
 
 If no patch is left, drop the fork.
