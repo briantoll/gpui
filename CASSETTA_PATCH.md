@@ -2,7 +2,7 @@
 
 This repository is [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui)
 0.2.2 exactly as published on crates.io (first commit, `Cargo.toml` as
-published, registry bookkeeping files dropped), plus three patches for
+published, registry bookkeeping files dropped), plus four patches for
 [Cassetta](https://github.com/briantoll/cassetta), one commit each, which
 pins it by rev:
 
@@ -17,6 +17,7 @@ the patches are offered under the same terms. The version stays `0.2.2`.
 1. **Variable-font weights on Linux** (2026-10-13) — below.
 2. **The font fallback's last stage off on Linux** (2026-10-24) — below.
 3. **The dependency trim: `image` codecs, `oo7` behind `credentials`** (2026-10-24) — below.
+4. **`uniform_list` renders the items under its bottom padding** (2026-11-06) — below.
 
 # Patch 1: variable-font weights on Linux
 
@@ -145,6 +146,38 @@ farbfeld fails to decode (the error path every unknown format already takes);
 | zvariant / zbus / image / exr / image-webp / oo7 / tiff / ashpd | 1.2 MiB / 743 / 499 / 290 / 247 / 253 / 143 / 233 KiB | 429 / 635 / 268 / – / 247 / – / – / 183 KiB |
 | `cargo tree -d` | two `ashpd` (0.11, 0.12), two `rand` | one `ashpd`, one `rand` |
 
+# Patch 4: `uniform_list` renders the items under its bottom padding
+
+## Why
+
+`uniform_list` treats its two vertical paddings differently. The first visible
+item is found from the scroll offset plus the top padding, so an item scrolled
+up under the top padding is still rendered; the last visible item is found from
+the *padded* height alone, so items scrolled under the bottom padding are not
+rendered at all, although the content mask the items paint under is the
+element's full bounds. The bottom padding is therefore a dead strip of the
+element's background rather than part of the scroll port that content passes
+through, which is what padding on a scrolling box means everywhere else (and
+what the top padding already does here).
+
+Cassetta's Songs list pads its bottom by the floating player bar's clearance
+(83 px) so the last row stops above the bar at the end of the list. Mid-list,
+that padding cut three rows out from under the bar and the bar sat on a blank
+band instead of floating over the rows (its Albums grid, padded 18 px with
+~200 px rows, escaped by rounding: the row crossing the padded bottom is still
+rendered and paints through). Seen 2026-11-06, Brian's dogfood.
+
+## The hunk (`src/elements/uniform_list.rs`, `prepaint`)
+
+| Where | What |
+|---|---|
+| `last_visible_element_ix` | `(-scroll_offset.y + padded_bounds.size.height + padding.bottom) / item_height`, ceiled: the bottom padding joins the visible height, as `padding.top` already joins the offset for `first_visible_element_ix`. Nothing else changes: the content size, the scroll clamp (the last item still ends `padding.bottom` above the padded bottom), the item origins and the content mask are as published. |
+
+What it costs: a list with bottom padding renders up to `ceil(padding.bottom /
+item_height)` more items per frame, which is what the top padding already
+costs. A list whose bottom padding was relied on as a blank band under its
+rows gets rows there; none of Cassetta's does.
+
 # On the next gpui bump
 
 Start a fresh branch `cassetta-<version>` from the verbatim published crate and
@@ -166,5 +199,10 @@ in Zed main now holds the Linux text system), one commit per patch kept:
    and makes `oo7` optional, drop the patch; else re-apply it, re-reading
    `elements/img.rs` and `Image::to_image_data` for the codecs gpui opens
    (a new decoder there needs its feature).
+4. The bottom padding: read `last_visible_element_ix` in
+   `elements/uniform_list.rs`. If upstream counts `padding.bottom` into the
+   visible height (or clips items to the padded bounds and scrolls content
+   through the padding some other way), drop the patch; else re-apply the
+   hunk and re-check Cassetta's Songs list mid-scroll under the player bar.
 
 If no patch is left, drop the fork.

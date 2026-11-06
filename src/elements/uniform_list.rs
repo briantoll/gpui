@@ -449,7 +449,14 @@ impl Element for UniformList {
 
                     let first_visible_element_ix =
                         (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
-                    let last_visible_element_ix = ((-scroll_offset.y + padded_bounds.size.height)
+                    // The bottom padding is part of the scroll port, as the top
+                    // padding is above: items scrolled under it render (the
+                    // content mask below is the element's full bounds), so a
+                    // list padded for something floating over its end keeps
+                    // its rows under that thing instead of a blank strip.
+                    let last_visible_element_ix = ((-scroll_offset.y
+                        + padded_bounds.size.height
+                        + padding.bottom)
                         / item_height)
                         .ceil() as usize;
 
